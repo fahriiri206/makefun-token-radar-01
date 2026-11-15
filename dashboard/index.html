@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FIELDNOTE: pre-token protocol radar</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#board">Skip to the ranked board</a>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="#board" aria-label="FIELDNOTE home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 28 28" width="28" height="28" aria-hidden="true">
+          <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" stroke-width="1.5"></circle>
+          <path d="m18 10-2.6 5.4L10 18l2.6-5.4z" fill="currentColor"></path>
+        </svg>
+      </span>
+      <span class="brand-copy">
+        <strong>FIELDNOTE</strong>
+        <span>Protocol field notes</span>
+      </span>
+    </a>
+    <div class="masthead-meta" id="masthead-meta" aria-label="Snapshot provenance"></div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="hero-copy">
+      <p class="eyebrow">Launch-value radar / sealed snapshot</p>
+      <h1 id="hero-title">Find the protocol worth farming <em>before</em> its token.</h1>
+      <p class="lede" id="hero-lede"></p>
+      <div class="hero-actions">
+        <a class="button primary" href="#board">Scan the board</a>
+        <a class="button quiet" href="#method">Read the method</a>
+      </div>
+    </div>
+    <div class="hero-facts" id="hero-facts" aria-label="Radar coverage"></div>
+  </section>
+
+  <section class="workbench" id="board" aria-labelledby="board-title">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">The board</p>
+        <h2 id="board-title">No token in the record, ranked by conservative implied value</h2>
+      </div>
+      <p class="section-note" id="board-note"></p>
+    </div>
+
+    <div class="controls" role="search" aria-label="Filter the board">
+      <div class="field search-field">
+        <label for="search">Search</label>
+        <input id="search" name="search" type="search" autocomplete="off" spellcheck="false" placeholder="Name, slug, category or chain">
+      </div>
+      <div class="field">
+        <label for="category">Category</label>
+        <select id="category" name="category"><option value="all">All categories</option></select>
+      </div>
+      <div class="field">
+        <label for="chain">Chain</label>
+        <select id="chain" name="chain"><option value="all">All chains</option></select>
+      </div>
+      <div class="field">
+        <label for="confidence">Confidence</label>
+        <select id="confidence" name="confidence">
+          <option value="all">Any confidence</option>
+          <option value="High">High</option>
+          <option value="Medium">Medium</option>
+          <option value="Low">Low</option>
+        </select>
+      </div>
+      <div class="field status-field">
+        <span class="field-label">Token status</span>
+        <div class="segmented" id="status-tabs" role="group" aria-label="Token status">
+          <button type="button" data-status="no-token" aria-pressed="true">No token in record</button>
+          <button type="button" data-status="trades" aria-pressed="false">Token trades</button>
+        </div>
+      </div>
+      <label class="check" for="watchlist-only">
+        <input id="watchlist-only" type="checkbox" name="watchlist">
+        <span>Watchlist only</span>
+      </label>
+      <button class="button quiet reset" id="reset" type="button">Reset</button>
+    </div>
+
+    <div class="filter-line" id="filter-line" aria-live="polite"></div>
+
+    <div class="layout">
+      <div class="table-panel">
+        <div class="table-caption">
+          <span id="result-count" aria-live="polite"></span>
+          <span class="table-hint">Click a row or press Enter on its name for the full note.</span>
+        </div>
+        <div class="table-wrap">
+          <table id="radar-table">
+            <caption class="visually-hidden" id="table-caption">Protocols ranked by conservative implied launch value</caption>
+            <thead id="table-head"></thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="empty" hidden>
+          <h3>No protocol matches that filter.</h3>
+          <p>Clear the search or widen the category, chain or confidence filter.</p>
+          <button class="button primary" type="button" id="empty-reset">Clear all filters</button>
+        </div>
+        <div class="pager" id="pager" hidden>
+          <button class="button quiet" type="button" id="prev-page">Previous</button>
+          <span id="page-label"></span>
+          <button class="button quiet" type="button" id="next-page">Next</button>
+        </div>
+      </div>
+
+      <aside class="side" aria-label="Field signals">
+        <section class="side-block" aria-labelledby="side-value">
+          <div class="side-heading">
+            <h3 id="side-value">Value ladder</h3>
+            <span>top estimates</span>
+          </div>
+          <div id="value-ladder" class="ladder"></div>
+        </section>
+        <section class="side-block" aria-labelledby="side-coverage">
+          <div class="side-heading">
+            <h3 id="side-coverage">Watchlist by category</h3>
+            <span id="coverage-total"></span>
+          </div>
+          <div id="category-chart" class="bars"></div>
+        </section>
+        <section class="side-block" aria-labelledby="side-confidence">
+          <div class="side-heading">
+            <h3 id="side-confidence">Confidence mix</h3>
+            <span>ranked rows</span>
+          </div>
+          <div id="confidence-chart" class="confidence-chart"></div>
+          <p class="side-note">Confidence discounts the estimate; it never invents data. Thin peer samples and short records lower it.</p>
+        </section>
+        <section class="side-block note-block" aria-labelledby="side-record">
+          <h3 id="side-record">What the snapshot records</h3>
+          <p id="record-note"></p>
+        </section>
+      </aside>
+    </div>
+  </section>
+
+  <section class="method" id="method" aria-labelledby="method-title">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Method &amp; limits</p>
+        <h2 id="method-title">Every estimate is a chain of snapshot figures</h2>
+      </div>
+      <p class="section-note">No names are special-cased. No market data is fabricated.</p>
+    </div>
+    <div class="method-grid">
+      <article class="method-card">
+        <span class="method-num">01</span>
+        <h3>Peer comp</h3>
+        <p>For each protocol, the model takes the median market-cap-to-TVL ratio of live-token protocols in the same category. Fewer than three category peers fall back to chain peers, then all live peers.</p>
+      </article>
+      <article class="method-card">
+        <span class="method-num">02</span>
+        <h3>Conservative haircut</h3>
+        <p>The median is clamped to 0.05..4x and multiplied by 0.60. A launch is treated as worth less than the mature peer set, not more.</p>
+      </article>
+      <article class="method-card">
+        <span class="method-num">03</span>
+        <h3>Growth &amp; maturity</h3>
+        <p>Seven-day TVL change is clamped to -50..100% and weighted 0.30. Time on record adds up to a 1.00 maturity multiplier over 1,095 days; unknown age uses 365 days.</p>
+      </article>
+      <article class="method-card">
+        <span class="method-num">04</span>
+        <h3>Confidence discount</h3>
+        <p>High confidence is 1.00, medium 0.92 and low 0.80. Confidence rises with a larger peer sample, a longer record, a reported 7-day change and multi-chain TVL.</p>
+      </article>
+    </div>
+    <div class="formula" aria-label="Valuation formula">
+      <code>implied value = TVL &times; peer mcap/TVL &times; 0.60 &times; growth &times; maturity &times; confidence</code>
+    </div>
+    <div class="limits">
+      <div>
+        <h3>What this is</h3>
+        <p>A scan of DefiLlama's sealed protocol record at the snapshot date. It is useful for choosing where to spend farming time and for comparing protocols on the same basis.</p>
+      </div>
+      <div>
+        <h3>What this is not</h3>
+        <p>Not a promise that a token will launch, not a live yield or eligibility check, and not a claim that a protocol has no token. The record may simply omit one.</p>
+      </div>
+      <div>
+        <h3>How to read a row</h3>
+        <p>Rank is the model's ordering; the detail note shows every input, the peer table and the risk register. Values are estimates, not prices.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <p><strong>FIELDNOTE</strong> / token launch radar / make.fun token-radar-01</p>
+    <p id="footer-meta"></p>
+  </div>
+</footer>
+
+<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+  <div class="drawer-top">
+    <p class="eyebrow" id="drawer-eyebrow">Protocol note</p>
+    <button class="icon-button" type="button" id="drawer-close" aria-label="Close protocol note">&times;</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

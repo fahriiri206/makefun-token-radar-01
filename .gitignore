@@ -1,0 +1,19 @@
+node_modules/
+out/
+output/
+.env
+.env.*
+*.log
+.DS_Store
+wallet*.json
+*keypair*.json
+
+# generated previews, caches and test artifacts
+.cache/
+preview/
+coverage/
+test-results/
+playwright-report/
+*.pid
+*.tmp
+*.tar.gz
