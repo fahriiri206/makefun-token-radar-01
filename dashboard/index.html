@@ -156,17 +156,17 @@
       <article class="method-card">
         <span class="method-num">01</span>
         <h3>Peer comp</h3>
-        <p>For each protocol, the model takes the median market-cap-to-TVL ratio of live-token protocols in the same category. Fewer than three category peers fall back to chain peers, then all live peers.</p>
+        <p>For each protocol, the model takes the median market-cap-to-TVL ratio of live-token protocols in the same category, plus that pool's 25th and 75th percentile ratios. Fewer than three category peers fall back to chain peers, then all live peers.</p>
       </article>
       <article class="method-card">
         <span class="method-num">02</span>
         <h3>Conservative haircut</h3>
-        <p>The median is clamped to 0.05..4x and multiplied by 0.60. A launch is treated as worth less than the mature peer set, not more.</p>
+        <p>The median is clamped to 0.05..4x and multiplied by 0.60. A launch is treated as worth less than the mature peer set, not more. The low and high band edges get the same clamp and haircut.</p>
       </article>
       <article class="method-card">
         <span class="method-num">03</span>
-        <h3>Growth &amp; maturity</h3>
-        <p>Seven-day TVL change is clamped to -50..100% and weighted 0.30. Time on record adds up to a 1.00 maturity multiplier over 1,095 days; unknown age uses 365 days.</p>
+        <h3>Growth, maturity &amp; band</h3>
+        <p>Seven-day TVL change is clamped to -50..100% and weighted 0.30. Time on record adds up to a 1.00 maturity multiplier over 1,095 days; unknown age uses 365 days. Re-running the same factors at p25 and p75 gives the band.</p>
       </article>
       <article class="method-card">
         <span class="method-num">04</span>
@@ -175,8 +175,10 @@
       </article>
     </div>
     <div class="formula" aria-label="Valuation formula">
-      <code>implied value = TVL &times; peer mcap/TVL &times; 0.60 &times; growth &times; maturity &times; confidence</code>
+      <code>base = TVL &times; peer mcap/TVL p50 &times; 0.60 &times; growth &times; maturity &times; confidence</code>
+      <code>low = TVL &times; p25 &times; 0.60 &times; growth &times; maturity &times; confidence &nbsp; / &nbsp; high = TVL &times; p75 &times; 0.60 &times; growth &times; maturity &times; confidence</code>
     </div>
+    <p class="formula-note">The band is the peer-ratio quartile walk: it shows how much the comparable peer pool disagrees about mcap/TVL. It is not a market prediction, a price target or a promise that a token launches.</p>
     <div class="limits">
       <div>
         <h3>What this is</h3>
@@ -188,7 +190,7 @@
       </div>
       <div>
         <h3>How to read a row</h3>
-        <p>Rank is the model's ordering; the detail note shows every input, the peer table and the risk register. Values are estimates, not prices.</p>
+        <p>Rank is the model's ordering by the base estimate; the detail note shows every input, the p25/p50/p75 peer ratios, the low/base/high band, the risk register and a six-step farm timeline with each step's cost and duration plus the plan totals.</p>
       </div>
     </div>
   </section>

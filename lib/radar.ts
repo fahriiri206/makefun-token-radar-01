@@ -15,6 +15,17 @@
 //   confidence  = 1.00 high | 0.92 medium | 0.80 low
 //   implied     = round(tvl_usd x comp_used x growth x maturity x confidence)
 //
+// The base value is one point, so the row also carries a band. The band is the peer-ratio
+// quartile walk, not a market prediction: take the same comparable pool the median came from,
+// swap the median for its 25th and 75th percentile mcap/TVL ratio, and run the identical
+// haircut, growth, maturity and confidence factors.
+//
+//   implied_low  = tvl x clamp(p25, 0.05, 4) x 0.60 x growth x maturity x confidence
+//   implied_high = tvl x clamp(p75, 0.05, 4) x 0.60 x growth x maturity x confidence
+//
+// The band says how much the peer set itself disagrees about mcap/TVL; it is not a forecast of
+// where a token would trade, and it is forced to contain the base (low <= base <= high).
+//
 // No protocol name is special-cased. Every number the dashboard shows can be traced back to a
 // snapshot field or to this formula.
 
@@ -106,6 +117,9 @@ export interface Valuation {
   comp_sample: number;
   category_sample: number;
   comp_source: string;
+  peer_p25: number;
+  peer_p50: number;
+  peer_p75: number;
   growth_pct: number;
   growth_multiplier: number;
   maturity_multiplier: number;
@@ -113,6 +127,20 @@ export interface Valuation {
   confidence: Confidence;
   formula: string;
   implied_value_usd: number;
+  implied_low_usd: number;
+  implied_base_usd: number;
+  implied_high_usd: number;
+  band_note: string;
+}
+
+export interface FarmStep {
+  step: number;
+  action: string;
+  cost: string;
+  duration: string;
+  cost_low_usd: number;
+  cost_high_usd: number;
+  duration_minutes: number;
 }
 
 export interface BoardRow {
@@ -131,10 +159,15 @@ export interface BoardRow {
   watchlist: boolean;
   age_days: number | null;
   implied_value_usd: number;
+  implied_low_usd: number;
+  implied_high_usd: number;
   valuation: Valuation;
   risk: { score: number; flags: RiskFlag[] };
   peer_comps: PeerComp[];
   farm_steps: string[];
+  farm_plan: FarmStep[];
+  farm_budget_usd: number;
+  farm_time_days: number;
 }
 
 export interface LiveRow {
@@ -233,6 +266,17 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
+/** Linear-interpolated quantile of a sorted-once copy; q is 0..1. */
+export function quantile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * clamp(q, 0, 1);
+  const lower = Math.floor(pos);
+  const upper = Math.ceil(pos);
+  if (lower === upper) return sorted[lower]!;
+  return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (pos - lower);
+}
+
 interface CompIndex {
   all: number[];
   peers: Protocol[];
@@ -325,12 +369,26 @@ function valueProtocol(p: Protocol, snapshot: Snapshot, index: CompIndex): { imp
   const ageForModel = age ?? MODEL.unknown_age_days;
   const maturityMult = MODEL.maturity_floor + (clamp(ageForModel, 0, MODEL.maturity_days) / MODEL.maturity_days) * MODEL.maturity_range;
   const confidence = confidenceFor(p, age, categorySample, ratios.length, source);
-  const rawImplied = p.tvl_usd * compUsed * growthMult * maturityMult * confidence.factor;
-  const implied = Math.max(1, Math.min(100_000_000_000_000, Math.round(rawImplied)));
+  const factor = growthMult * maturityMult * confidence.factor;
+  const p25 = quantile(ratios, 0.25);
+  const p50 = quantile(ratios, 0.5);
+  const p75 = quantile(ratios, 0.75);
+  const lowComp = clamp(p25, MODEL.comp_floor, MODEL.comp_ceiling) * MODEL.comp_haircut;
+  const highComp = clamp(p75, MODEL.comp_floor, MODEL.comp_ceiling) * MODEL.comp_haircut;
+  const rawImplied = p.tvl_usd * compUsed * factor;
+  const base = Math.max(1, Math.min(100_000_000_000_000, Math.round(rawImplied)));
+  const rawLow = p.tvl_usd * lowComp * factor;
+  const rawHigh = p.tvl_usd * highComp * factor;
+  const low = Math.max(1, Math.min(base, Math.round(rawLow)));
+  const high = Math.max(base, Math.min(100_000_000_000_000, Math.round(rawHigh)));
   const formula =
     `$${Math.round(p.tvl_usd).toLocaleString('en-US')} TVL x ${round2(compUsed).toFixed(2)} comp ` +
     `x ${round4(growthMult).toFixed(2)} growth x ${round4(maturityMult).toFixed(2)} maturity ` +
     `x ${confidence.factor.toFixed(2)} confidence`;
+  const bandNote =
+    `Peer mcap/TVL quartiles in the ${source} pool are ${round2(p25).toFixed(2)}x / ` +
+    `${round2(p50).toFixed(2)}x / ${round2(p75).toFixed(2)}x (p25 / p50 / p75); the band re-runs ` +
+    `the same formula at p25 and p75. It measures peer disagreement, not a price prediction.`;
   const valuation: Valuation = {
     tvl_usd: p.tvl_usd,
     comp_raw: round4(compRaw),
@@ -339,15 +397,22 @@ function valueProtocol(p: Protocol, snapshot: Snapshot, index: CompIndex): { imp
     comp_sample: ratios.length,
     category_sample: categorySample,
     comp_source: source,
+    peer_p25: round4(p25),
+    peer_p50: round4(p50),
+    peer_p75: round4(p75),
     growth_pct: round4(growthPct),
     growth_multiplier: round4(growthMult),
     maturity_multiplier: round4(maturityMult),
     confidence_factor: confidence.factor,
     confidence,
     formula,
-    implied_value_usd: implied,
+    implied_value_usd: base,
+    implied_low_usd: low,
+    implied_base_usd: base,
+    implied_high_usd: high,
+    band_note: bandNote,
   };
-  return { implied, valuation, age };
+  return { implied: base, valuation, age };
 }
 
 function riskFor(p: Protocol, age: number | null, valuation: Valuation): { score: number; flags: RiskFlag[] } {
@@ -449,43 +514,136 @@ function holdFor(age: number | null): number {
   return 30;
 }
 
-function actionFor(p: Protocol, capital: number, chain: string): string {
+// Gas is derived from the chain, never from the protocol's name. Ethereum L1 and Bitcoin pay
+// real per-transaction fees; the L2s, Solana-class chains and newer appchains are cents.
+const LOW_FEE_CHAINS = new Set([
+  'arbitrum', 'base', 'optimism', 'polygon', 'binance', 'avalanche', 'solana', 'sui', 'aptos',
+  'near', 'ton', 'tron', 'stellar', 'algorand', 'cardano', 'ripple', 'noble', 'monad',
+  'hyperliquid l1', 'plume mainnet', 'mezo', 'ink', 'katana', 'arc', 'tempo', 'pharos',
+  'bittensor', 'flare', 'core', 'babylon genesis', 'bsquared', 'citrea', 'etherlink', 'hemi',
+  'world chain', 'stable', 'morph', 'tac', 'rayls', 'corn', 'bob', 'fluent', 'sei', 'xdai',
+  'fantom', 'celo', 'berachain', 'mantle', 'linea', 'scroll', 'zksync era', 'blast', 'sonic',
+  'unichain', 'ronin', 'abstract', 'apechain', 'astar', 'aurora', 'cronos', 'filecoin', 'gnosis',
+  'immutable zkevm', 'klaytn', 'kaia', 'manta', 'metis', 'moonbeam', 'opbnb', 'rootstock',
+  'starknet', 'taiko', 'viction', 'wemix', 'zora', 'plasma', 'robinhood chain',
+]);
+
+interface GasProfile {
+  low: number;
+  high: number;
+  label: string;
+  chain: string;
+}
+
+function gasProfile(chain: string | undefined): GasProfile {
+  const named = (chain ?? '').trim();
+  const key = named.toLowerCase();
+  if (key === 'ethereum' || key === 'mainnet') return { low: 3, high: 18, label: 'Ethereum L1 gas', chain: named };
+  if (key === 'bitcoin') return { low: 1.5, high: 8, label: 'Bitcoin network fee', chain: named };
+  if (LOW_FEE_CHAINS.has(key)) return { low: 0.02, high: 0.6, label: `${named} gas`, chain: named };
+  return { low: 0.1, high: 2, label: `${named || 'network'} gas`, chain: named || 'its main chain' };
+}
+
+function usdRange(low: number, high: number): string {
+  const fmt = (n: number): string => {
+    if (n >= 10) return `$${Math.round(n).toLocaleString('en-US')}`;
+    const text = (Math.round(n * 100) / 100).toFixed(2);
+    return `$${text.replace(/\.00$/, '')}`;
+  };
+  const lo = Math.max(0, low);
+  const hi = Math.max(lo, high);
+  return lo === hi ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`;
+}
+
+interface FarmFees {
+  entry_low_pct: number;
+  entry_high_pct: number;
+  exit_low_pct: number;
+  exit_high_pct: number;
+  entry_action: string;
+  weekly_verb: string;
+}
+
+// Protocol fees are derived from the category and the capital, never from a name. Percentages are
+// of the capital deployed, so they scale with the budget the row states.
+function farmFees(p: Protocol, budget: number, chain: string): FarmFees {
   const c = (p.category ?? '').toLowerCase();
   const name = p.name;
-  if (c.includes('risk curator') || c.includes('allocator') || c.includes('curator')) {
-    return `Deposit $${capital} of USDC into a ${name} curated vault on ${chain}, keep the vault receipt and confirm the curator's fee before signing.`;
+  if (c.includes('curator') || c.includes('allocator')) {
+    return {
+      entry_low_pct: 0, entry_high_pct: 0.005, exit_low_pct: 0, exit_high_pct: 0.005,
+      entry_action: `Deposit $${budget} of USDC into a ${name} curated vault on ${chain}, read the curator fee before signing and keep the vault receipt.`,
+      weekly_verb: 'deposit check or curator-vault report review',
+    };
   }
   if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) {
-    return `Supply $${capital} of USDC to ${name} on ${chain}, keep the position open and borrow no more than half of it if the app rewards borrowing.`;
+    return {
+      entry_low_pct: 0, entry_high_pct: 0.001, exit_low_pct: 0, exit_high_pct: 0.001,
+      entry_action: `Supply $${budget} of USDC to ${name} on ${chain} and, only if the app rewards it, borrow at most half against the supply.`,
+      weekly_verb: 'supply, borrow or repay action',
+    };
   }
-  if (c.includes('dex') || c.includes('yield') || c.includes('farm')) {
-    return `Provide $${capital} of liquidity to ${name}'s main pool on ${chain}, use a range you can rebalance and keep the LP receipt.`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('farm') || c.includes('liquidity')) {
+    return {
+      entry_low_pct: 0.0005, entry_high_pct: 0.003, exit_low_pct: 0.0005, exit_high_pct: 0.003,
+      entry_action: `Provide $${budget} of liquidity to ${name}'s main ${chain} pool in a range you can rebalance, and keep the LP receipt.`,
+      weekly_verb: 'swap, rebalance or fee claim',
+    };
   }
   if (c.includes('bridge') || c.includes('cross chain')) {
-    return `Bridge $${capital} of USDC to ${chain} through ${name}, then use the bridged funds in the app and keep the bridge receipt.`;
+    return {
+      entry_low_pct: 0.0005, entry_high_pct: 0.003, exit_low_pct: 0.0005, exit_high_pct: 0.003,
+      entry_action: `Bridge $${budget} of USDC through ${name} to ${chain}, then use the bridged funds inside the app and keep the bridge receipt.`,
+      weekly_verb: 'bridge or app transaction',
+    };
   }
   if (c.includes('stak') || c.includes('restak')) {
-    return `Stake $${capital} of the chain's native asset through ${name} on ${chain} and keep the liquid staking receipt.`;
+    return {
+      entry_low_pct: 0, entry_high_pct: 0.001, exit_low_pct: 0, exit_high_pct: 0.001,
+      entry_action: `Stake $${budget} of ${chain}'s native asset through ${name} and keep the liquid staking receipt.`,
+      weekly_verb: 'stake, delegate or restake action',
+    };
   }
-  if (c.includes('perpetual') || c.includes('derivative') || c.includes('basis')) {
-    return `Deposit $${capital} of USDC as margin on ${name} on ${chain}, open one small hedge and keep the position within the app's limits.`;
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('basis') || c.includes('option')) {
+    return {
+      entry_low_pct: 0.0002, entry_high_pct: 0.001, exit_low_pct: 0.0002, exit_high_pct: 0.001,
+      entry_action: `Deposit $${budget} of USDC as margin on ${name} on ${chain}, open one small hedge and stay inside the app's limits.`,
+      weekly_verb: 'trade, hedge roll or margin check',
+    };
   }
   if (c.includes('prediction')) {
-    return `Fund $${capital} on ${name} on ${chain}, place one liquid market position and record the market id and resolution date.`;
+    return {
+      entry_low_pct: 0, entry_high_pct: 0.02, exit_low_pct: 0, exit_high_pct: 0.02,
+      entry_action: `Fund $${budget} on ${name} on ${chain}, place one liquid market position and record the market id and resolution date.`,
+      weekly_verb: 'market position or resolution check',
+    };
   }
   if (c.includes('rwa')) {
-    return `Mint or subscribe to $${capital} of ${name}'s yield asset on ${chain}, confirm the redemption terms and hold the receipt.`;
+    return {
+      entry_low_pct: 0, entry_high_pct: 0.01, exit_low_pct: 0, exit_high_pct: 0.01,
+      entry_action: `Subscribe to $${budget} of ${name}'s yield asset on ${chain}, confirm the redemption terms and hold the receipt.`,
+      weekly_verb: 'subscription, yield check or redemption action',
+    };
   }
   if (c.includes('insurance')) {
-    return `Buy $${capital} of cover from ${name} on ${chain}, save the policy terms and check the claims process before you need it.`;
+    return {
+      entry_low_pct: 0.005, entry_high_pct: 0.03, exit_low_pct: 0, exit_high_pct: 0.002,
+      entry_action: `Buy $${budget} of cover from ${name} on ${chain}, save the policy terms and read the claims process before you need it.`,
+      weekly_verb: 'cover or claims check',
+    };
   }
   if (c.includes('stable')) {
-    return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain}, confirm the collateral ratio and keep the receipt.`;
+    return {
+      entry_low_pct: 0, entry_high_pct: 0.001, exit_low_pct: 0, exit_high_pct: 0.001,
+      entry_action: `Mint or deposit $${budget} of the stable asset through ${name} on ${chain}, confirm the collateral ratio and keep the receipt.`,
+      weekly_verb: 'mint, repay or collateral check',
+    };
   }
-  if (c.includes('payment') || c.includes('otc') || c.includes('cex') || c.includes('chain')) {
-    return `Use $${capital} of USDC in ${name}'s app on ${chain} for one qualifying transaction, then keep the activity receipt.`;
-  }
-  return `Deposit $${capital} of USDC into ${name} on ${chain}, confirm the deposit asset in the app's own docs and keep the position open.`;
+  return {
+    entry_low_pct: 0, entry_high_pct: 0.005, exit_low_pct: 0, exit_high_pct: 0.005,
+    entry_action: `Deposit $${budget} of USDC into ${name} on ${chain}, confirm the deposit asset in the app's own docs and keep the position open.`,
+    weekly_verb: 'deposit, swap or vote action',
+  };
 }
 
 function step(text: string): string {
@@ -495,19 +653,64 @@ function step(text: string): string {
   return value;
 }
 
-function farmSteps(p: Protocol, age: number | null): string[] {
+/** Six costed steps per row: each names an action, a USD cost range and a duration. */
+function farmPlan(p: Protocol, age: number | null): { steps: string[]; plan: FarmStep[]; budget: number; days: number } {
   const chain = p.chains.length > 0 ? p.chains[0]! : 'its main chain';
-  const capital = capitalFor(p);
-  const hold = holdFor(age);
-  return [
-    `Open ${p.name}'s own app on ${chain} from its DefiLlama listing and verify the contract address before connecting a wallet.`,
-    actionFor(p, capital, chain),
-    `Use a dedicated wallet funded with only the $${capital} you can leave in place; keep the seed phrase offline and approve one contract at a time.`,
-    `Complete one qualifying action every week for ${hold} days: a deposit, borrow, swap, stake or vote, whichever the app counts.`,
-    `Log the wallet, dates, transactions and position value in a farm journal so you can prove activity and unwind the position cleanly.`,
-    `Watch ${p.name}'s TVL, 7-day change and official points page weekly; pause new capital if TVL falls more than 20% or the contracts change.`,
-    `Before claiming any future token, use only the claim link published by ${p.name}; never pay a fee or sign a blind approval to claim.`,
-  ].map(step);
+  const gas = gasProfile(chain);
+  const budget = capitalFor(p);
+  const days = holdFor(age);
+  const weeks = Math.max(1, Math.round(days / 7));
+  const fees = farmFees(p, budget, chain);
+  const entryFee = usdRange(budget * fees.entry_low_pct, budget * fees.entry_high_pct);
+  const exitFee = usdRange(budget * fees.exit_low_pct, budget * fees.exit_high_pct);
+  const txGas = usdRange(gas.low, gas.high);
+  const cadenceGas = usdRange(gas.low * weeks, gas.high * weeks);
+  const bridgeFee = usdRange(budget * 0.0005, budget * 0.003);
+  const plan: FarmStep[] = [
+    {
+      step: 1,
+      action: `Create a dedicated wallet for ${p.name} and verify the ${gas.chain} contract address from the protocol's own docs before connecting; do not reuse a wallet that holds other funds.`,
+      cost: '$0.00 (no transaction)', duration: '10–15 min',
+      cost_low_usd: 0, cost_high_usd: 0, duration_minutes: 12,
+    },
+    {
+      step: 2,
+      action: `Fund the wallet with $${budget} of USDC on ${gas.chain}; if the funds start on another chain, bridge them once and budget the bridge fee shown here.`,
+      cost: `${txGas} gas plus ${bridgeFee} bridge fee if you cross chains`, duration: '15–30 min',
+      cost_low_usd: gas.low, cost_high_usd: gas.high + budget * 0.003, duration_minutes: 22,
+    },
+    {
+      step: 3,
+      action: fees.entry_action,
+      cost: `${entryFee} protocol fee plus ${txGas} gas`, duration: '10–25 min',
+      cost_low_usd: budget * fees.entry_low_pct + gas.low,
+      cost_high_usd: budget * fees.entry_high_pct + gas.high,
+      duration_minutes: 18,
+    },
+    {
+      step: 4,
+      action: `Repeat one qualifying ${fees.weekly_verb} every 7 days for ${days} days on ${p.name}, and log each transaction hash in a farm journal.`,
+      cost: `${usdRange(gas.low, gas.high)} gas per weekly action, about ${cadenceGas} over ${weeks} weeks`,
+      duration: `${days} days`,
+      cost_low_usd: gas.low * weeks, cost_high_usd: gas.high * weeks, duration_minutes: days * 1440,
+    },
+    {
+      step: 5,
+      action: `When ${p.name} publishes a claim or points page, claim or compound only there, never at a link sent to you, and record the transaction.`,
+      cost: `${txGas} gas for the claim`, duration: '10–20 min',
+      cost_low_usd: gas.low, cost_high_usd: gas.high, duration_minutes: 15,
+    },
+    {
+      step: 6,
+      action: `Review ${p.name}'s TVL weekly and unwind through the same app: withdraw, remove liquidity or repay, then confirm the balance on ${gas.chain}.`,
+      cost: `${exitFee} exit fee plus ${txGas} gas`, duration: '20–40 min',
+      cost_low_usd: budget * fees.exit_low_pct + gas.low,
+      cost_high_usd: budget * fees.exit_high_pct + gas.high,
+      duration_minutes: 30,
+    },
+  ];
+  const steps = plan.map((s) => step(`${s.action} Cost: ${s.cost}. Time: ${s.duration}.`));
+  return { steps, plan, budget, days };
 }
 
 function bySlug(snapshot: Snapshot): Map<string, Protocol> {
@@ -526,27 +729,35 @@ export function buildBoard(snapshot: Snapshot): BoardRow[] {
     return { p, implied, valuation, age };
   });
   scored.sort((a, b) => b.implied - a.implied || b.p.tvl_usd - a.p.tvl_usd || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map(({ p, implied, valuation, age }, i) => ({
-    rank: i + 1,
-    slug: p.slug,
-    name: p.name,
-    category: p.category,
-    chains: p.chains,
-    tvl_usd: p.tvl_usd,
-    change_7d: p.change_7d,
-    mcap_usd: p.mcap_usd,
-    listed_at: p.listed_at,
-    gecko_id: p.gecko_id,
-    symbol: p.symbol,
-    token_status: 'no-token-in-record',
-    watchlist: watch.has(p.slug),
-    age_days: age,
-    implied_value_usd: implied,
-    valuation,
-    risk: riskFor(p, age, valuation),
-    peer_comps: nearestPeers(p, buildIndexOnce(snapshot)),
-    farm_steps: farmSteps(p, age),
-  }));
+  return scored.map(({ p, implied, valuation, age }, i) => {
+    const farm = farmPlan(p, age);
+    return {
+      rank: i + 1,
+      slug: p.slug,
+      name: p.name,
+      category: p.category,
+      chains: p.chains,
+      tvl_usd: p.tvl_usd,
+      change_7d: p.change_7d,
+      mcap_usd: p.mcap_usd,
+      listed_at: p.listed_at,
+      gecko_id: p.gecko_id,
+      symbol: p.symbol,
+      token_status: 'no-token-in-record',
+      watchlist: watch.has(p.slug),
+      age_days: age,
+      implied_value_usd: implied,
+      implied_low_usd: valuation.implied_low_usd,
+      implied_high_usd: valuation.implied_high_usd,
+      valuation,
+      risk: riskFor(p, age, valuation),
+      peer_comps: nearestPeers(p, buildIndexOnce(snapshot)),
+      farm_steps: farm.steps,
+      farm_plan: farm.plan,
+      farm_budget_usd: farm.budget,
+      farm_time_days: farm.days,
+    };
+  });
 }
 
 // A board is built in one pass; this memo keeps the peer index from being rebuilt per protocol.
@@ -684,9 +895,16 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
       return `${row.slug} has implied value ${row.implied_value_usd}`;
     }
     if (row.farm_steps.length < 3 || row.farm_steps.length > 12) return `${row.slug} has ${row.farm_steps.length} farm steps`;
+    if (!Number.isSafeInteger(row.farm_budget_usd) || row.farm_budget_usd <= 0) return `${row.slug} has farm budget ${row.farm_budget_usd}`;
+    if (!Number.isSafeInteger(row.farm_time_days) || row.farm_time_days <= 0) return `${row.slug} has farm time ${row.farm_time_days}`;
+    if (!(row.implied_low_usd > 0 && row.implied_low_usd <= row.implied_value_usd && row.implied_value_usd <= row.implied_high_usd)) {
+      return `${row.slug} has a band of ${row.implied_low_usd}..${row.implied_high_usd} around ${row.implied_value_usd}`;
+    }
     for (const stepText of row.farm_steps) {
       const trimmed = stepText.trim();
       if (trimmed.length < 20 || trimmed.length > 600) return `${row.slug} has a farm step of ${trimmed.length} characters`;
+      if (!trimmed.includes('$')) return `${row.slug} has a farm step with no dollar cost`;
+      if (!/(min|hour|day|week)/i.test(trimmed)) return `${row.slug} has a farm step with no duration`;
     }
   }
   const missing = snapshot.watchlist.filter((slug) => !seen.has(slug));
